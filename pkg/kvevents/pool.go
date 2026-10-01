@@ -21,6 +21,7 @@ import (
 	"strings"
 	"sync"
 
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/client-go/util/workqueue"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -323,7 +324,11 @@ func (p *Pool) processEventBatch(ctx context.Context, batch *EventBatch, podIden
 			}
 
 			// Create PodEntry for this specific event's device tier.
-			podEntries := []kvblock.PodEntry{{PodIdentifier: podIdentifier, DeviceTier: deviceTier}}
+			podEntries := []kvblock.PodEntry{{
+				PodIdentifier: podIdentifier,
+				DeviceTier:    deviceTier,
+				Timestamp:     batch.Timestamp,
+			}}
 			if ev.GroupIdx != nil {
 				g := kvblock.GroupID(*ev.GroupIdx)
 				p.groupCatalog.Learn(podIdentifier, g, kvblock.GroupMetadata{
@@ -334,7 +339,6 @@ func (p *Pool) processEventBatch(ctx context.Context, batch *EventBatch, podIden
 				podEntries[0].HasGroup = true
 				podEntries[0].GroupIdx = g
 			}
-
 			engineKeys := make([]kvblock.BlockHash, len(ev.BlockHashes))
 			for i, hash := range ev.BlockHashes {
 				engineKeys[i] = kvblock.BlockHash(hash)
@@ -415,6 +419,9 @@ func (p *Pool) processEventBatch(ctx context.Context, batch *EventBatch, podIden
 				p.handleDeviceTierUpdate(ctx, ev.Tokens, engineKeys, podEntries, podIdentifier, deviceTier)
 				continue
 			}
+			if p.confirmedEventsStale(ctx, requestKeys, podEntries[0]) {
+				continue
+			}
 
 			// Index.Add infers the engine->request mapping from the ratio of
 			// len(engineKeys) to len(requestKeys) (1:1, many:1, or 1:many).
@@ -432,7 +439,11 @@ func (p *Pool) processEventBatch(ctx context.Context, batch *EventBatch, podIden
 			}
 
 			// Create PodEntry for this specific event's device tier.
-			podEntries := []kvblock.PodEntry{{PodIdentifier: podIdentifier, DeviceTier: deviceTier}}
+			podEntries := []kvblock.PodEntry{{
+				PodIdentifier: podIdentifier,
+				DeviceTier:    deviceTier,
+				Timestamp:     batch.Timestamp,
+			}}
 			if ev.GroupIdx != nil {
 				podEntries[0].HasGroup = true
 				podEntries[0].GroupIdx = kvblock.GroupID(*ev.GroupIdx)
@@ -443,6 +454,13 @@ func (p *Pool) processEventBatch(ctx context.Context, batch *EventBatch, podIden
 			// 1:1 (legacy) and 1:many (canonical) mappings.
 			for _, hash := range ev.BlockHashes {
 				engineKey := kvblock.BlockHash(hash)
+				requestKey, err := p.index.GetRequestKey(ctx, engineKey)
+				if err != nil {
+					continue
+				}
+				if p.confirmedEventsStale(ctx, []kvblock.BlockHash{requestKey}, podEntries[0]) {
+					continue
+				}
 				if err := p.index.Evict(ctx, engineKey, kvblock.EngineKey, podEntries); err != nil {
 					debugLogger.Error(err, "Failed to evict engine key from index",
 						"podIdentifier", podIdentifier, "engineKey", engineKey)
@@ -476,4 +494,32 @@ func (p *Pool) processEventBatch(ctx context.Context, batch *EventBatch, podIden
 			debugLogger.Info("Unknown event", "podIdentifier", podIdentifier, "event", genericEvent)
 		}
 	}
+}
+
+func (p *Pool) confirmedEventsStale(ctx context.Context, requestKeys []kvblock.BlockHash,
+	entry kvblock.PodEntry,
+) bool {
+	for _, requestKey := range requestKeys {
+		pods, err := p.index.Lookup(ctx, []kvblock.BlockHash{requestKey}, sets.New(entry.PodIdentifier))
+		if err != nil {
+			continue
+		}
+		for _, existing := range pods[requestKey] {
+			if existing.DeviceTier != entry.DeviceTier ||
+				existing.HasGroup != entry.HasGroup ||
+				(existing.HasGroup && existing.GroupIdx != entry.GroupIdx) {
+				continue
+			}
+			if existing.Speculative ||
+				(entry.Timestamp > 0 && existing.Timestamp > 0 && existing.Timestamp >= entry.Timestamp) {
+				return true
+			}
+			if entry.Timestamp > 0 && existing.Timestamp > 0 {
+				if err := p.index.Evict(ctx, requestKey, kvblock.RequestKey, []kvblock.PodEntry{existing}); err != nil {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }

@@ -284,8 +284,16 @@ func (m *InMemoryIndex) evictPodsFromRequestKey(requestKey, engineKey BlockHash,
 	}
 
 	podCache.mu.Lock()
-	for _, entry := range entries {
-		podCache.cache.Remove(entry)
+	for _, requestedEntry := range entries {
+		for _, storedEntry := range podCache.cache.Keys() {
+			if storedEntry.PodIdentifier == requestedEntry.PodIdentifier &&
+				storedEntry.DeviceTier == requestedEntry.DeviceTier &&
+				storedEntry.Speculative == requestedEntry.Speculative &&
+				storedEntry.HasGroup == requestedEntry.HasGroup &&
+				(!storedEntry.HasGroup || storedEntry.GroupIdx == requestedEntry.GroupIdx) {
+				podCache.cache.Remove(storedEntry)
+			}
+		}
 	}
 
 	isEmpty := podCache.cache.Len() == 0

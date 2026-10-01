@@ -181,6 +181,16 @@ func (c *CostPodCache) Delete(entry PodEntry) {
 	}
 }
 
+func (c *CostPodCache) DeleteMatching(match func(PodEntry) bool) {
+	c.cache.Range(func(key, _ interface{}) bool {
+		entry, ok := key.(PodEntry)
+		if ok && match(entry) {
+			c.Delete(entry)
+		}
+		return true
+	})
+}
+
 // Len returns the number of entries in the cache.
 func (c *CostPodCache) Len() int {
 	return int(c.size.Load())
@@ -391,8 +401,14 @@ func (m *CostAwareMemoryIndex) evictPodsFromRequestKey(
 
 	podCacheLenBefore := podCache.Len()
 
-	for _, entry := range entries {
-		podCache.Delete(entry)
+	for _, requestedEntry := range entries {
+		podCache.DeleteMatching(func(storedEntry PodEntry) bool {
+			return storedEntry.PodIdentifier == requestedEntry.PodIdentifier &&
+				storedEntry.DeviceTier == requestedEntry.DeviceTier &&
+				storedEntry.Speculative == requestedEntry.Speculative &&
+				storedEntry.HasGroup == requestedEntry.HasGroup &&
+				(!storedEntry.HasGroup || storedEntry.GroupIdx == requestedEntry.GroupIdx)
+		})
 	}
 
 	if podCache.Len() == 0 {

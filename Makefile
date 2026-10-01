@@ -20,10 +20,6 @@ LDFLAGS := -X '$(VERSION_PKG).CommitSHA=$(GIT_COMMIT)' -X '$(VERSION_PKG).BuildR
 PYTHON_EXE := $(shell command -v python3.12 || command -v python3)
 
 CONTAINER_TOOL := $(shell { command -v docker >/dev/null 2>&1 && echo docker; } || { command -v podman >/dev/null 2>&1 && echo podman; })
-
-ifeq ($(CONTAINER_TOOL),)
-$(error Neither docker nor podman is installed. Try: sudo apt install docker.io OR brew install docker)
-endif
 BUILDER := $(shell command -v buildah >/dev/null 2>&1 && echo buildah || echo $(CONTAINER_TOOL))
 UDS_TOKENIZER_IMAGE ?= llm-d-uds-tokenizer:e2e-test
 FS_BACKEND_NAME ?= llmd-fs-backend

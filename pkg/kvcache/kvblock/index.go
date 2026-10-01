@@ -186,6 +186,9 @@ type PodEntry struct {
 	DeviceTier string
 	// Speculative indicates the entry was added predictively before a KV event confirmed it.
 	Speculative bool
+	// Timestamp is the event or prediction time in Unix seconds. It is used to
+	// reject out-of-order confirmed KV events.
+	Timestamp float64
 	// HasGroup indicates GroupIdx identifies a vLLM KV cache group.
 	HasGroup bool
 	// GroupIdx identifies the vLLM KV cache group for HMA events.
