@@ -94,9 +94,25 @@ var _ Index = &InMemoryIndex{}
 type PodCache struct {
 	// cache is an LRU cache that maps PodEntry to their last access time.
 	// thread-safe.
-	cache *lru.Cache[PodEntry, struct{}]
+	cache *lru.Cache[PodIdentity, PodEntry]
 	// mu protects the cache from concurrent access during check-and-set operations.
 	mu sync.Mutex
+}
+
+type PodIdentity struct {
+	PodIdentifier string
+	DeviceTier    string
+	HasGroup      bool
+	GroupIdx      GroupID
+}
+
+func getIdentity(e PodEntry) PodIdentity {
+	return PodIdentity{
+		PodIdentifier: e.PodIdentifier,
+		DeviceTier:    e.DeviceTier,
+		HasGroup:      e.HasGroup,
+		GroupIdx:      e.GroupIdx,
+	}
 }
 
 // Lookup receives a list of requestKeys and a set of pod identifiers,
@@ -130,10 +146,10 @@ func (m *InMemoryIndex) Lookup(ctx context.Context, requestKeys []BlockHash,
 
 			if podIdentifierSet.Len() == 0 {
 				// If no pod identifiers are provided, return all pods
-				podsPerKey[requestKey] = pods.cache.Keys()
+				podsPerKey[requestKey] = pods.cache.Values()
 			} else {
 				// Filter pods based on the provided pod identifiers
-				for _, pod := range pods.cache.Keys() {
+				for _, pod := range pods.cache.Values() {
 					if podIdentifierSet.Has(pod.PodIdentifier) {
 						podsPerKey[requestKey] = append(podsPerKey[requestKey], pod)
 					}
@@ -188,7 +204,7 @@ func (m *InMemoryIndex) Add(ctx context.Context, engineKeys, requestKeys []Block
 		//nolint:nestif // double-checked locking pattern
 		if !found {
 			// Create new cache
-			cache, err := lru.New[PodEntry, struct{}](m.podCacheSize)
+			cache, err := lru.New[PodIdentity, PodEntry](m.podCacheSize)
 			if err != nil {
 				return fmt.Errorf("failed to create pod cache for key %s: %w", requestKey.String(), err)
 			}
@@ -215,7 +231,7 @@ func (m *InMemoryIndex) Add(ctx context.Context, engineKeys, requestKeys []Block
 
 		podCache.mu.Lock()
 		for _, entry := range entries {
-			podCache.cache.Add(entry, struct{}{})
+			podCache.cache.Add(getIdentity(entry), entry)
 		}
 		podCache.mu.Unlock()
 
@@ -279,7 +295,7 @@ func (m *InMemoryIndex) evictPodsFromRequestKey(requestKey, engineKey BlockHash,
 
 	podCache.mu.Lock()
 	for _, entry := range entries {
-		podCache.cache.Remove(entry)
+		podCache.cache.Remove(getIdentity(entry))
 	}
 
 	isEmpty := podCache.cache.Len() == 0
@@ -327,7 +343,7 @@ func (m *InMemoryIndex) Clear(ctx context.Context, podIdentifier string) error {
 
 		podCache.mu.Lock()
 		var matched []PodEntry
-		for _, entry := range podCache.cache.Keys() {
+		for _, entry := range podCache.cache.Values() {
 			if entry.PodIdentifier == podIdentifier {
 				matched = append(matched, entry)
 			}
